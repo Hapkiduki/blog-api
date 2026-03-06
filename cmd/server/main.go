@@ -8,6 +8,7 @@ import (
 
 	"github.com/Hapkiduki/blog-api/internal/middleware"
 	"github.com/Hapkiduki/blog-api/pkg/logger"
+	"github.com/Hapkiduki/blog-api/pkg/tracer"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
@@ -26,6 +27,25 @@ func main() {
 		_ = log.Sync()
 	}()
 
+	// Initialize tracer
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
+		otelEndpoint = "localhost:4318"
+	}
+
+	serviceName := os.Getenv("OTEL_SERVICE_NAME")
+	if serviceName == "" {
+		serviceName = "blog-api"
+	}
+
+	shutdownTracer, err := tracer.InitTracer(serviceName, otelEndpoint)
+	if err != nil {
+		log.Fatal("failed to initialize tracer", zap.Error(err))
+	}
+	defer shutdownTracer()
+
+	log.Info("tracer initialized", zap.String("endpoint", otelEndpoint))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -34,10 +54,11 @@ func main() {
 	r := chi.NewRouter()
 
 	// Middleware stack (order matters!)
-	r.Use(chimw.RequestID)               // 1. Generate request ID
-	r.Use(chimw.RealIP)                  // 2. Extract real IP from proxy headers
-	r.Use(middleware.RequestLogger(log)) // 3. Log requests with zap (our custom middleware)
-	r.Use(chimw.Recoverer)               // 4. Recover from panics
+	r.Use(chimw.RequestID)                 // 1. Generate request ID
+	r.Use(chimw.RealIP)                    // 2. Extract real IP from proxy headers
+	r.Use(middleware.Tracing(serviceName)) // Tracing BEFORE logging so trace_id is available
+	r.Use(middleware.RequestLogger(log))   // 3. Log requests with zap (our custom middleware)
+	r.Use(chimw.Recoverer)                 // 4. Recover from panics
 
 	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
